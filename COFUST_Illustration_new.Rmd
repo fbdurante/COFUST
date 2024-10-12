@@ -1,0 +1,152 @@
+---
+title: "Clustering of time series with spatial constraints: An illustration of the COFUST algorithm"
+output: html_document
+date: "2024-10-11"
+author: "Alessia Benevento e Fabrizio Durante"
+---
+
+In this illustration, we apply the COFUST algorithm by [Disegna, D'Urso and Durante (2017)](https://www.sciencedirect.com/science/article/abs/pii/S2211675317300714) for clustering of time series that are recorded in sites at different geographic coordinates. The problem is known as the **clustering problem with (soft) spatial constraints**.
+
+```{r setup, include=FALSE}
+# include external functions helpful for the analysis
+source("COFUST_Functions.R")
+source("Fcmdd.R")
+install_and_load("ggplot2")
+install_and_load("sf")
+install_and_load("dplyr")
+install_and_load("geosphere")
+```
+
+### The data
+
+We consider monthly maxima precipitation data collected throughout the Italian territory. Specifically, the data have been downloaded from the [Climate Data Store](https://cds.climate.copernicus.eu), which collects global climate and weather data of the past 8 decades. 
+The considered data spread on $n = 105$ points representing the Italian most representative cities (provinces). The stations can be visualized on the map as follows.
+
+```{r, message=FALSE, warning=FALSE}
+Coord_Italy=as.matrix(read.table("Coord_Italy.txt"))
+DATA_Italy=as.matrix(read.table("DATA_Italy.txt"))
+
+Italy.map=st_read("italy.geojson")
+
+ gp <- ggplot(data = Italy.map) +
+      geom_sf(fill = "whitesmoke", color = "black")+
+      geom_point(data = data.frame(x = Coord_Italy[, 1], 
+                                   y = Coord_Italy[, 2]),
+                                   aes(x = x, y = y), 
+             size = 1.5, color = "black") +  
+  labs(x = "Longitude", y = "Latitude") +  
+  theme_light() +  
+  coord_sf(xlim = c(min(Coord_Italy[, 1]) - 0.5, max(Coord_Italy[, 1]) + 0.5),
+           ylim = c(min(Coord_Italy[, 2]) - 0.5, max(Coord_Italy[, 2]) + 0.5))
+
+print(gp)
+```
+We consider monthly precipitations from January 2011 till November 2023, which form a collection of time series of length $T = 155$, recorded with their geographic coordinates.
+
+Following a copula-based model for time series, we de-trend the observed precipitations and, hence, focus on the copula among the resulting residuals. Thus, we remove the multi-year climatological average from monthly precipitation maxima within the data-set.
+Then, from these residuals, we remove the monthly running average. Some of the detrended time series are visualized below.
+```{r}
+gp.ts=ggplot(as.data.frame(DATA_Italy[1,]), aes(x = seq(as.Date("2011-01-01"), as.Date("2023-11-01"), by = "month"), 
+                             y = DATA_Italy[1,])) +
+  geom_line(color = "blue") +  # Line plot
+  labs(title = "Time Series from November 2011 to December 2023",
+       x = "Date", y = "Value") +
+  theme_minimal()
+plot(gp.ts)
+```
+
+
+
+For the analysis, we rename the data of interest.
+```{r}
+X=t(DATA_Italy) 
+x_coords <- Coord_Italy[,1] 
+y_coords <- Coord_Italy[,2] 
+Coord=cbind(x_coords,y_coords)
+```
+Moreover, it will be helpful to calculate the (normalized) geographic distances among sites where the time series have been collected. This calculation is done below.
+```{r}
+# Calculate the distance matrix in kilometers and normalize it to a range of 0 to 1
+S <- (distm(Coord_Italy, fun = distHaversine) / 1000 - 
+      min(distm(Coord_Italy, fun = distHaversine) / 1000)) / 
+      (max(distm(Coord_Italy, fun = distHaversine) / 1000) - 
+      min(distm(Coord_Italy, fun = distHaversine) / 1000))
+```
+
+### COFUST algorithm
+
+Now, we use the standard COFUST algorithm to partition the time series into different groups taking into account the (normalized) geographic distance. First, we compute both the pure temporal (resp. pure spatial) dissimilarity as $L^2$-distance between the comonotonicity copula and the temporal (resp. spatial) copula. We recall that the temporal copula is the empirical copula associated with the observations, while the spatial copula is equal to the convex combination of the independence copula $\Pi$ and the comonotone copula $M$, where the mixing parameter depends on the normalized geographic distance.
+
+```{r}
+COFUST.Diss.Temp=COFUST.Diss.ts.sp(X,S,max.C.sp="Pi",L=3,f.type=2,alpha=0)
+COFUST.Diss.Spat=COFUST.Diss.ts.sp(X,S,max.C.sp="Pi",L=3,f.type=2,alpha=1)
+```
+
+Then, we apply the fuzzy clustering with medoids to the given dissimilarity matrices. The corresponding cluster composition with medoids are given below. Here, the number of clusters has been set to $k=3$ for both the pure temporal case and pure spatial case.
+
+```{r, fig.show="hold", out.width="50%"}
+set.seed(1) #Fcmdd uses a random inizialization
+COFUST.Clust.Temp=Fcmdd(t(X),m=1.5,k=3,as.dist(COFUST.Diss.Temp))
+COFUST.Clust.Spat=Fcmdd(t(X),m=1.5,k=3,as.dist(COFUST.Diss.Spat))
+plot(Graph.fcmdd(Coord,COFUST.Clust.Temp,"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST.Clust.Spat,"italy.geojson"))
+```
+
+In order to provide a major penalty to the spatial distance, we could also use as spatial copula the convex combination of countermonotone and comonotone case. The results are visualized below.
+
+```{r, fig.show="hold", out.width="50%"}
+COFUST.Diss.Temp2=COFUST.Diss.ts.sp(X,S,max.C.sp="W",L=2,f.type=2,alpha=0)
+COFUST.Diss.Spat2=COFUST.Diss.ts.sp(X,S,max.C.sp="W",L=2,f.type=2,alpha=1)
+set.seed(1)
+COFUST.Clust.Temp2=Fcmdd(t(X),m=1.5,k=3,as.dist(COFUST.Diss.Temp2))
+COFUST.Clust.Spat2=Fcmdd(t(X),m=1.5,k=3,as.dist(COFUST.Diss.Spat2))
+plot(Graph.fcmdd(Coord,COFUST.Clust.Temp2,map="italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST.Clust.Spat2,map="italy.geojson"))
+```
+
+Notice that, in order to select the optimal number of clusters for the pure temporal case, we could calculate the fuzzy silhouette index for different values of the number of clusters $k$. Then, we can select the $k$'s value with the highest silhouette. The procedure is summarized below.
+
+```{r, fig.show="hold", out.width="50%"}
+set.seed(1)
+FS=Fcmdd.Sil(t(X),1.5,kmax=10,dist.matrix=as.dist(COFUST.Diss.Temp))
+FS_df <- data.frame(k = FS$FS.Values[, 1], fuzzy_silhouette = FS$FS.Values[, 2])
+ggplot(FS_df, aes(x = k, y = fuzzy_silhouette)) +
+  geom_line(color = "red", linewidth = 1.5) +  # Line for fuzzy silhouette values
+  labs(x = "k", y = "Fuzzy Silhouette", title = "Fuzzy Silhouette Plot") +  # Axis labels and title
+  theme_minimal()  # Use a minimal theme
+```
+
+Now, for various values of the mixing parameter $\alpha\in\{0,0.1,0.2,0.3,0.4,0.5\}$ of the spatio-temporal dissimilarity, we adopt the fuzzy silhouette index to choose the optimal number $k$ of clusters (where $2\le k\le 10$). 
+
+```{r}
+# Define the alpha values you want to iterate over
+alpha_values <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5)
+
+# Initialize a list to store the results for each alpha
+COFUST_Diss_list <- list()
+
+# Loop over the alpha values
+for (i in seq_along(alpha_values)) {
+  alpha <- alpha_values[i]
+  # Store each result in the list
+  COFUST_Diss_list[[i]] <- COFUST.Diss.ts.sp(X, S, max.C.sp="Pi", L=2, f.type=2, alpha=alpha)
+}
+set.seed(1)
+# Initialize a list to store clustering results
+COFUST_Clust_list <- list()
+# Perform clustering for each alpha
+for (i in seq_along(alpha_values)) {
+  COFUST_Clust_list[[i]] <- Fcmdd.Sil(t(X), m=1.5, kmax=8, dist.matrix=as.dist(COFUST_Diss_list[[i]]))$Best.C
+}
+```
+Then we plot the related cluster composition on the map.
+```{r, fig.show="hold", out.width="50%"}
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[1]],"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[2]],"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[3]],"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[4]],"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[5]],"italy.geojson"))
+plot(Graph.fcmdd(Coord,COFUST_Clust_list[[6]],"italy.geojson"))
+```
+
+That's all folks!
